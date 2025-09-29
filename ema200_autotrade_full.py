@@ -1,28 +1,26 @@
-# 파일명 제안: ema200_autotrade_full.py
+# 파일명 제안: `ema200_autotrade_full.py`
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Project: EMA200 Swing & Mid-Term Autotrade (BTC-gated, OB/FVG aided)
-# Version: v1.4.2 (2025-09-29 KST) — Per-symbol fixed qty + gate TF fix + safe bracket
+# Version: v1.4.1 (2025-09-29 KST) — Per-symbol fixed qty by mode (SWING vs MID)
 # Language: Python 3.10+
-# Single-file deliverable; ccxt optional; self-tests bundled.
+# Single-file deliverable; no external installs required to run tests.
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
-WHAT'S NEW (v1.4.2)
-- GateConfig.btc_gate_tf 실제 반영: BTC 게이트 타임프레임을 설정대로 사용.
-- (옵션) STRICT_BRACKET 모드: 엔트리 후 실제 포지션 수량으로 SL/TP 동기화 발주.
-- TPWatcher 숏 트레일 조건 가독성 개선(동작 동일).
-- StubBybit 마켓 체결가를 최근 캔들 종가로 근사(테스트 체감 ↑).
-- 나머지 로직/테스트는 v1.4.1 유지.
+WHAT'S NEW (v1.4.1)
+- **심볼별 고정 수량**을 **전략 타입별**(스윙/중기)로 분리 설정:
+  - FIXED_QTY_SWING: 스윙/단타(30m/1h) 진입 시 사용할 고정 수량
+  - FIXED_QTY_MID:   중기(4h) 진입 시 사용할 고정 수량
+- 각 심볼(BTC/ETH/SOL/BNB 등)에 대해 개수를 독립적으로 지정 가능.
+- 미지정 심볼은 이전처럼 잔고비율(risk_per_trade) 방식으로 자동 산출.
+- 테스트 추가: 고정 수량 오버라이드 확인.
 
 HOW TO RUN
 - Default (no ccxt or USE_CCXT=0) → runs self-tests (no API keys needed).
-- With ccxt + keys → set:
-    USE_CCXT=1
-    BYBIT_KEY=...
-    BYBIT_SECRET=...
-    BYBIT_TESTNET=true|false
-- STRICT_BRACKET=true 로 실행하면 실거래에서 SL/TP를 포지션 수량과 동기화하여 발주.
+- With ccxt + keys → set `USE_CCXT=1` and export `BYBIT_KEY`, `BYBIT_SECRET`, `BYBIT_TESTNET`.
+
+NEVER CHANGE EXISTING TESTS unless clearly wrong; previous tests kept + one new test added.
 """
 
 from __future__ import annotations
@@ -39,21 +37,21 @@ except Exception:
 # =============================== config =======================================
 @dataclass(frozen=True)
 class RiskConfig:
-    risk_per_trade: float = 0.01            # fallback sizing when fixed qty not set
-    day_loss_cut: float = -0.05             # TODO(v1.5): daily PnL guard
-    consec_stop_max: int = 2                # TODO(v1.5): stop streak guard
-    cooldown_bars: int = 3                  # TODO(v1.5): per-signal cooldown
+    risk_per_trade: float = 0.01            # notional fraction cap (for fallback sizing)
+    day_loss_cut: float = -0.05
+    consec_stop_max: int = 2
+    cooldown_bars: int = 3
     noise_band_bp: tuple[float,float] = (5, 10)  # EMA200 ±(0.05%~0.10%) new-entry block
     sl_swing_pct: float = 0.01             # Swing scalp: 1% stop
     sl_mid_pct: float = 0.03               # Mid-term: 3% stop
-    sl_buffer_pct: float = 0.002           # (reserved) ATR/Buffer mixing
-    sl_buffer_atr_coef: float = 0.8        # (reserved)
-    trail_pct: float = 0.01                # 1% trailing (used in TPWatcher)
+    sl_buffer_pct: float = 0.002
+    sl_buffer_atr_coef: float = 0.8
+    trail_pct: float = 0.01                # 1% trailing
     be_bump_pct: float = 0.001             # +0.1% to breakeven
 
 @dataclass(frozen=True)
 class GateConfig:
-    btc_gate_tf: str = "30m"               # ← v1.4.2: respected by btc_gate()
+    btc_gate_tf: str = "30m"
     gate_confirm_bars: int = 1
 
 @dataclass(frozen=True)
@@ -75,20 +73,19 @@ class Params:
     fvg_ob_near_atr_coef: float = 0.6       # 0.6 * ATR(15m)
     ob_fvg_bonus_pct: float = 0.05          # +5% each
     max_size_mult: float = 2.0
-    two_top_tol_bp: float = 12              # 0.12% (reserved, TODO)
+    two_top_tol_bp: float = 12              # 0.12%
 
 @dataclass(frozen=True)
 class ExecConfig:
     adopt_mode: str = os.getenv("ADOPT_MODE", "ADOPT")  # ADOPT or CLOSE_THEN_START
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
     exchange: str = os.getenv("EXCHANGE", "bybit")
-    account_mode: str = os.getenv("ACCOUNT_MODE", "oneway")  # TODO(v1.5)
-    leverage: int = int(os.getenv("LEV", "2"))               # TODO(v1.5)
+    account_mode: str = os.getenv("ACCOUNT_MODE", "oneway")
+    leverage: int = int(os.getenv("LEV", "2"))
     api_key: str = os.getenv("BYBIT_KEY", "")
     api_secret: str = os.getenv("BYBIT_SECRET", "")
     testnet: bool = os.getenv("BYBIT_TESTNET", "true").lower()=="true"
     use_ccxt: bool = os.getenv("USE_CCXT", "0").lower() in ("1","true","yes") and ccxt is not None
-    strict_bracket_after_fill: bool = os.getenv("STRICT_BRACKET", "false").lower() == "true"
 
 RISK = RiskConfig(); GATE=GateConfig(); TF=Timeframes(); SYMB=Symbols(); P=Params(); EXEC=ExecConfig()
 
@@ -102,10 +99,10 @@ def get_EXEC() -> ExecConfig:
     globals()['EXEC'] = exec_inst
     return exec_inst
 
-# === per-symbol fixed quantity (SWING / MID) ================================
+# === per-symbol fixed quantity (SWING / MID) — 여기만 수정하면 됩니다 =================
 # 스윙/단타(30m/1h)용 고정 수량
 FIXED_QTY_SWING: dict[str, float] = {
-    "BTCUSDT": 0.01,
+    "BTCUSDT": 0.01,   # 필요 없으면 삭제 또는 주석
     "ETHUSDT": 0.50,
     "SOLUSDT": 10.0,
     "BNBUSDT": 1.0,
@@ -117,9 +114,10 @@ FIXED_QTY_MID: dict[str, float] = {
     "SOLUSDT": 15.0,
     "BNBUSDT": 1.5,
 }
-# (선택) 심볼별 추가 배수 — 기본 1.0
+# (선택) 심볼별 추가 배수 — 기본 1.0, 미세 조정용
 SYMBOL_MULT_SWING: dict[str, float] = {"BTCUSDT":1.0,"ETHUSDT":1.0,"SOLUSDT":1.0,"BNBUSDT":1.0}
 SYMBOL_MULT_MID:   dict[str, float] = {"BTCUSDT":1.0,"ETHUSDT":1.0,"SOLUSDT":1.0,"BNBUSDT":1.0}
+# =====================================================================================
 
 # =============================== utils ========================================
 E6 = 10**6
@@ -160,7 +158,7 @@ def slope(values: List[float], window: int=8) -> float:
     a = values[-window:]
     return (a[-1]-a[0]) / max(1e-9, window)
 
-# ============================== zones (OB/FVG) ================================
+# ============================== zones (OB/FVG) =================================
 class Zone(NamedTuple):
     kind: str
     start: float
@@ -245,11 +243,9 @@ class StubBybit:
         p = self._markets[symbol]['precision']['price']
         return f"{price:.{p}f}"
     def amount_to_precision(self, symbol: str, amount: float) -> str:
-         p = self._markets[symbol]['precision']['amount']
-         factor = 10 ** p
-         rounded = int(amount * factor) / factor  # 버림 처리
-         return f"{rounded:.{p}f}"
-
+        p = self._markets[symbol]['precision']['amount']
+        fmt = f"{{:.{p}f}}" if p>0 else "{:.0f}"
+        return fmt.format(amount)
     def fetch_balance(self): return {'total': {'USDT': self._balance_usdt}}
     def _append_order(self, symbol: str, order: Dict[str,Any]): self._orders.setdefault(symbol, []).append(order)
     def create_order(self, symbol: str, type_: str, side: str, amount: float, price: Optional[float], params: Dict[str,Any]):
@@ -266,17 +262,6 @@ class StubBybit:
         if type_=='market':
             pos = self._positions.get(symbol, {'symbol':symbol, 'contracts':0.0, 'entryPrice':0.0, 'side':None})
             qty = order['amount']
-            # 최근 캔들 close를 엔트리로 근사 (v1.4.2)
-            last_px = price
-            try:
-                # 가능한 최근 동일 심볼의 아무 TF라도 사용
-                last_close = None
-                for (sym, tf), arr in list(self._candles.items())[::-1]:
-                    if sym == symbol and arr:
-                        last_close = arr[-1][4]; break
-                if last_close is not None: last_px = last_close
-            except Exception:
-                pass
             if order['reduceOnly']:
                 if pos['contracts']>0 and side=='sell':
                     pos['contracts']=max(0.0, pos['contracts']-qty)
@@ -289,7 +274,7 @@ class StubBybit:
                     pos['contracts'] += qty; pos['side']='long'
                 else:
                     pos['contracts'] -= qty; pos['side']='short'
-                pos['entryPrice'] = last_px or pos.get('entryPrice', 0.0) or 100.0
+                pos['entryPrice'] = price or pos.get('entryPrice', 0.0) or 100.0
             self._positions[symbol]=pos
         return order
     def fetch_open_orders(self, symbol: str) -> List[Dict[str,Any]]: return list(self._orders.get(symbol, []))
@@ -363,7 +348,6 @@ class BybitBroker:
     def place_stop_market(self, symbol: str, side: str, qty: float, stop_price: float, reduce_only=True, cid: Optional[str]=None):
         _,qty = self._round(symbol, None, qty)
         params={'reduceOnly': reduce_only, 'clientOrderId': cid or make_cid('SL',symbol), 'triggerPrice': stop_price}
-        # NOTE: stub은 즉시 'market'로 처리. 실제 ccxt/bybit는 stop params 필요.
         return self.x.create_order(symbol, 'market', 'sell' if side=='buy' else 'buy', qty, None, params)
     def cancel_all(self, symbol: str):
         try: self.x.cancel_all_orders(symbol)
@@ -398,14 +382,11 @@ class Strategy:
         bias = Bias.LONG if c4[-1]>e4[-1] else Bias.SHORT
         return regime, bias
     def btc_gate(self) -> GateState:
-        # v1.4.2: 설정값 GATE.btc_gate_tf 사용
-        gate_tf = getattr(GATE, 'btc_gate_tf', TF.swing_b)
-        t,o,h,l,c,v = self.s.series(SYMB.base, gate_tf)
+        t,o,h,l,c,v = self.s.series(SYMB.base, TF.swing_b)
         if len(c)<210: return GateState.OFF
         e=ema(c,200)
-        bars = max(1, int(getattr(GATE, 'gate_confirm_bars', 1)))
-        ok_up = c[-1]>e[-1] and all(cc>ee for cc,ee in zip(c[-bars:],e[-bars:]))
-        ok_dn = c[-1]<e[-1] and all(cc<ee for cc,ee in zip(c[-bars:],e[-bars:]))
+        ok_up = c[-1]>e[-1] and all(cc>ee for cc,ee in zip(c[-GATE.gate_confirm_bars:],e[-GATE.gate_confirm_bars:]))
+        ok_dn = c[-1]<e[-1] and all(cc<ee for cc,ee in zip(c[-GATE.gate_confirm_bars:],e[-GATE.gate_confirm_bars:]))
         return GateState.ON if (ok_up or ok_dn) else GateState.OFF
     def _two_top_near(self, highs: List[float], tol_bp: float) -> bool:
         if len(highs)<3: return False
@@ -449,7 +430,7 @@ class Strategy:
         """
         mode: 'swing' or 'mid'
         1) 심볼이 FIXED_QTY_{MODE}에 있으면 그 값(개수) 사용 (+ 심볼별 multiplier, + 함수 파라미터 mult)
-        2) 없으면 잔고비율 기반 계산 (fallback)
+        2) 없으면 잔고비율 기반 계산 (기존 fallback)
         """
         if mode not in ('swing','mid'): mode='swing'
         table = FIXED_QTY_MID if mode=='mid' else FIXED_QTY_SWING
@@ -478,15 +459,6 @@ class Strategy:
         else:
             sl = entry * (1 + pct); tp1 = entry - (sl - entry)
         return sl, tp1
-    # v1.4.2: 실거래용 브래킷 동기화 보조
-    def _sync_position_qty(self, symbol: str, desired_qty: float) -> float:
-        """Fetch actual position contracts; if none, return 0.0"""
-        try:
-            pos = self.b.fetch_position(symbol)
-            qty = abs(float(pos.get('contracts', 0.0)))
-            return qty if qty > 0 else 0.0
-        except Exception:
-            return desired_qty
     def on_bar_close(self):
         self.gate_state = self.btc_gate()
         regime,bias = self.regime_and_bias()
@@ -499,7 +471,7 @@ class Strategy:
                 entry_price = sig['price']; atr15 = sig['atr15']; ema_ref = sig['ema']
                 mult = self.size_multiplier(sym, pref, entry_price, ema_ref, atr15)
                 qty = self.calc_qty(sym, entry_price, mult, mode='swing')
-                # split/market entry
+                # split/market
                 try:
                     t3,o3,h3,l3,c3,v3 = self.s.series(sym, TF.micro)
                     if len(c3)>=30:
@@ -519,20 +491,10 @@ class Strategy:
                         self.b.place_market(sym, pref, qty, reduce_only=False, cid=make_cid('ENT',sym))
                 except Exception:
                     self.b.place_market(sym, pref, qty, reduce_only=False, cid=make_cid('ENT',sym))
-                # bracket placement
                 sl,tp1 = self.compute_sl_tp(pref, entry_price, ema_ref, atr15, mode='swing')
-                if get_EXEC().strict_bracket_after_fill:
-                    # 실거래 안전지향: 체결 반영 대기 후 포지션 수량으로 동기화
-                    time.sleep(0.2)
-                    pos_qty = self._sync_position_qty(sym, qty)
-                    if pos_qty > 0:
-                        self.b.place_limit(sym, 'sell' if pref=='buy' else 'buy', pos_qty*0.6, tp1, reduce_only=True, cid=make_cid('TP1',sym))
-                        self.b.place_stop_market(sym, pref, pos_qty, sl, reduce_only=True, cid=make_cid('SL',sym))
-                else:
-                    # 테스트/스텁 친화: 계획 수량 기준으로 발주
-                    self.b.place_limit(sym, 'sell' if pref=='buy' else 'buy', qty*0.6, tp1, reduce_only=True, cid=make_cid('TP1',sym))
-                    self.b.place_stop_market(sym, pref, qty, sl, reduce_only=True, cid=make_cid('SL',sym))
-        # mid-term loop (BTC only)
+                self.b.place_limit(sym, 'sell' if pref=='buy' else 'buy', qty*0.6, tp1, reduce_only=True, cid=make_cid('TP1',sym))
+                self.b.place_stop_market(sym, pref, qty, sl, reduce_only=True, cid=make_cid('SL',sym))
+        # mid-term loop
         t4,o4,h4,l4,c4,v4 = self.s.series(SYMB.base, TF.mid)
         if len(c4)>=210:
             e4=ema(c4,200); sl4=slope(e4,10)
@@ -544,28 +506,14 @@ class Strategy:
                     qty = self.calc_qty(SYMB.base, price1, 1.0, mode='mid')
                     sl,tp1 = self.compute_sl_tp('buy', price1, e1[-1], atr1, 'mid')
                     self.b.place_market(SYMB.base, 'buy', qty, reduce_only=False, cid=make_cid('MID',SYMB.base))
-                    if get_EXEC().strict_bracket_after_fill:
-                        time.sleep(0.2)
-                        pos_qty = self._sync_position_qty(SYMB.base, qty)
-                        if pos_qty>0:
-                            self.b.place_limit(SYMB.base, 'sell', pos_qty*0.5, tp1, reduce_only=True, cid=make_cid('MIDTP1',SYMB.base))
-                            self.b.place_stop_market(SYMB.base, 'buy', pos_qty, sl, reduce_only=True, cid=make_cid('MIDSL',SYMB.base))
-                    else:
-                        self.b.place_limit(SYMB.base, 'sell', qty*0.5, tp1, reduce_only=True, cid=make_cid('MIDTP1',SYMB.base))
-                        self.b.place_stop_market(SYMB.base, 'buy', qty, sl, reduce_only=True, cid=make_cid('MIDSL',SYMB.base))
+                    self.b.place_limit(SYMB.base, 'sell', qty*0.5, tp1, reduce_only=True, cid=make_cid('MIDTP1',SYMB.base))
+                    self.b.place_stop_market(SYMB.base, 'buy', qty, sl, reduce_only=True, cid=make_cid('MIDSL',SYMB.base))
                 if c4[-1]<e4[-1] and sl4<0 and near:
                     qty = self.calc_qty(SYMB.base, price1, 1.0, mode='mid')
                     sl,tp1 = self.compute_sl_tp('sell', price1, e1[-1], atr1, 'mid')
                     self.b.place_market(SYMB.base, 'sell', qty, reduce_only=False, cid=make_cid('MID',SYMB.base))
-                    if get_EXEC().strict_bracket_after_fill:
-                        time.sleep(0.2)
-                        pos_qty = self._sync_position_qty(SYMB.base, qty)
-                        if pos_qty>0:
-                            self.b.place_limit(SYMB.base, 'buy', pos_qty*0.5, tp1, reduce_only=True, cid=make_cid('MIDTP1',SYMB.base))
-                            self.b.place_stop_market(SYMB.base, 'sell', pos_qty, sl, reduce_only=True, cid=make_cid('MIDSL',SYMB.base))
-                    else:
-                        self.b.place_limit(SYMB.base, 'buy', qty*0.5, tp1, reduce_only=True, cid=make_cid('MIDTP1',SYMB.base))
-                        self.b.place_stop_market(SYMB.base, 'sell', qty, sl, reduce_only=True, cid=make_cid('MIDSL',SYMB.base))
+                    self.b.place_limit(SYMB.base, 'buy', qty*0.5, tp1, reduce_only=True, cid=make_cid('MIDTP1',SYMB.base))
+                    self.b.place_stop_market(SYMB.base, 'sell', qty, sl, reduce_only=True, cid=make_cid('MIDSL',SYMB.base))
 
 # =============================== tp watcher ====================================
 class TPWatcher:
@@ -580,7 +528,6 @@ class TPWatcher:
         try:
             st = self._st(symbol)
             orders = self.b.fetch_open_orders(symbol)
-            # TP1 fill emulation: 시장가 청산 + BE stop 설정
             for o in list(orders):
                 if not o.get('reduceOnly'): continue
                 if o.get('type','limit')!='limit' or o.get('price') is None: continue
@@ -598,7 +545,6 @@ class TPWatcher:
                             be = st['entry']*(1+RISK.be_bump_pct) if side=='long' else st['entry']*(1-RISK.be_bump_pct)
                             self.b.place_stop_market(symbol, 'buy' if side=='short' else 'sell', max(qty-part,0.0), be, reduce_only=True, cid=make_cid('BE',symbol))
                             st['trail']=be
-            # trailing after TP1
             pos = self.b.fetch_position(symbol)
             if st.get('tp1_done') and pos.get('side') is not None and abs(float(pos.get('contracts',0)))>0:
                 new_stop_long = last_price*(1-RISK.sl_swing_pct)
@@ -608,8 +554,7 @@ class TPWatcher:
                         self.b.place_stop_market(symbol, 'buy', abs(float(pos.get('contracts',0))), new_stop_long, reduce_only=True, cid=make_cid('TRL',symbol))
                         st['trail']=new_stop_long
                 elif pos.get('side')=='short':
-                    # v1.4.2: 조건 가독성 정리 (동작 동일)
-                    if st.get('trail') is None or new_stop_short < st['trail']:
+                    if st.get('trail') is None or new_stop_short<st['trail'] or st['trail'] is None:
                         self.b.place_stop_market(symbol, 'sell', abs(float(pos.get('contracts',0))), new_stop_short, reduce_only=True, cid=make_cid('TRL',symbol))
                         st['trail']=new_stop_short
         except Exception:
@@ -686,30 +631,13 @@ def test_signal_long_accept():
     sig = app.strategy.swing_signal(SYMB.base, 'long'); assert sig is not None and sig['side']=='buy'
 
 def test_tp_watcher_triggers():
-    app = App()
-    app.exchange = StubBybit()
-    app.broker = BybitBroker(app.exchange)
-    app.broker.load_markets()
+    app = App(); app.exchange = StubBybit(); app.broker = BybitBroker(app.exchange); app.broker.load_markets()
     watcher = TPWatcher(app.broker)
-
-    # 더 큰 수량으로 진입
-    app.broker.place_market(SYMB.base, 'buy', 0.03, reduce_only=False, cid=make_cid('ENT', SYMB.base))
-
-    # TP1 주문 설정 (부분 청산)
-    app.broker.place_limit(SYMB.base, 'sell', 0.018, 105.0, reduce_only=True, cid=make_cid('TP1', SYMB.base))
-
-    # TP1 가격 도달 → TPWatcher 작동
-    watcher.on_tick(SYMB.base, 105.0)
-
-    # TP1 직후 포지션 일부 남아 있어야 함
-    pos_after_tp1 = app.broker.fetch_position(SYMB.base)
-    remaining_qty = abs(float(pos_after_tp1.get('contracts', 0)))
-    assert remaining_qty > 0.0, f"Expected remaining position after TP1, got {remaining_qty}"
-
-    # 트레일링 스탑 작동 확인
+    app.broker.place_market(SYMB.base, 'buy', 0.01, reduce_only=False, cid=make_cid('ENT',SYMB.base))
+    app.broker.place_limit(SYMB.base, 'sell', 0.006, 105.0, reduce_only=True, cid=make_cid('TP1',SYMB.base))
+    watcher.on_tick(SYMB.base, 105.0); pos = app.broker.fetch_position(SYMB.base)
+    assert abs(float(pos.get('contracts',0)))>0.0
     watcher.on_tick(SYMB.base, 110.0)
-
-
 
 def test_sl_rules():
     s = Strategy(CandleStore(), BybitBroker(StubBybit()))
@@ -750,7 +678,7 @@ def test_btc_gate_insufficient_bars():
     app = App(); app.exchange = StubBybit(); app.broker = BybitBroker(app.exchange); app.broker.load_markets()
     app.store = CandleStore(); app.strategy = Strategy(app.store, app.broker)
     arr=[[now_ms()-i*60_000,100,101,99,100,10] for i in range(20)][::-1]
-    app.store.push_bulk(SYMB.base, GATE.btc_gate_tf, arr)  # v1.4.2: gate TF 경로 테스트
+    app.store.push_bulk(SYMB.base, TF.swing_b, arr)
     assert app.strategy.btc_gate()==GateState.OFF
 
 def run_all_tests():
@@ -772,7 +700,7 @@ if __name__ == "__main__":
         app.preload((SYMB.base,)+SYMB.alts, (TF.mid,TF.swing_a,TF.swing_b,TF.helper,TF.micro))
         app.adopt_or_reset((SYMB.base,)+SYMB.alts)
         app.run_once_barclose()
-        print("LIVE v1.4.2 wired (ccxt). STRICT_BRACKET=", _EXEC_MAIN.strict_bracket_after_fill)
+        print("LIVE v1.4.1 wired (ccxt).")
     else:
         run_all_tests()
         print("STUB mode complete. Set USE_CCXT=1 to enable live with ccxt (when available).")
